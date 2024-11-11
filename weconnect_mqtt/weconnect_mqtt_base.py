@@ -21,8 +21,9 @@ from PIL import Image
 
 from requests import exceptions
 
-from weconnect import weconnect, addressable, errors, util, domain
-from weconnect.__version import __version__ as __weconnect_version__
+from weconnect_cupra import weconnect_cupra, addressable, errors, util
+from weconnect_cupra.__version import __version__ as __weconnect_version__
+from weconnect_cupra.service import Service
 
 from .__version import __version__
 
@@ -101,6 +102,7 @@ def main():  # noqa: C901  # pylint: disable=too-many-branches,too-many-statemen
     weConnectGroup.add_argument('-p', '--password', type=str, help='Password of Volkswagen id', required=False)
     weConnectGroup.add_argument('--spin', help='S-PIN of Volkswagen id, required for selected commands', required=False, nargs='?', action='store',
                                 default=None, const=True)
+    weConnectGroup.add_argument('--service', help='Service to connect to. One of WeConnect, MyCupra', required=True)
     defaultNetRc = os.path.join(os.path.expanduser("~"), ".netrc")
     weConnectGroup.add_argument('--netrc', help=f'File in netrc syntax providing login (default: {defaultNetRc}).'
                                 ' Netrc is only used when username and password are not provided  as arguments', default=None, required=False)
@@ -114,8 +116,6 @@ def main():  # noqa: C901  # pylint: disable=too-many-branches,too-many-statemen
     weConnectGroup.add_argument('--chargingLocationRadius', type=NumberRangeArgument(0, 100000),
                                 help='Radius in meters around the chargingLocation to search for chargers')
     weConnectGroup.add_argument('--no-capabilities', dest='noCapabilities', help='Do not add capabilities', action='store_true')
-    weConnectGroup.add_argument('--selective', help='Just fetch status of a certain type', default=None, required=False, action='append',
-                                type=domain.Domain, choices=list(domain.Domain))
     weConnectGroup.add_argument('--convert-times', dest='convertTimes',
                                 help='Convert all times from UTC to timezone, e.g. --convert-times \'Europe/Berlin\', leave empty to use system timezone',
                                 nargs='?', const='', default=None, type=str)
@@ -274,7 +274,7 @@ def main():  # noqa: C901  # pylint: disable=too-many-branches,too-many-statemen
 
     mqttCLient = WeConnectMQTTClient(clientId=args.mqttclientid, protocol=mqttVersion, transport=args.transport, interval=args.interval,
                                      prefix=args.prefix, ignore=args.ignore, updateCapabilities=(not args.noCapabilities),
-                                     updatePictures=args.pictures, selective=args.selective, listNewTopics=args.listTopics,
+                                     updatePictures=args.pictures, listNewTopics=args.listTopics,
                                      republishOnUpdate=args.republishOnUpdate, pictureFormat=args.pictureFormat, topicFilterRegex=topicFilterRegex,
                                      convertTimezone=convertTimezone, timeFormat=args.timeFormat, withRawJsonTopic=args.withRawJsonTopic,
                                      updateOnConnect=args.updateOnConnect)
@@ -309,14 +309,14 @@ def main():  # noqa: C901  # pylint: disable=too-many-branches,too-many-statemen
     try:
         while True:
             try:
-                weConnect = weconnect.WeConnect(username=username, password=password, spin=spin, updateAfterLogin=False,
+                weConnect = weconnect_cupra.WeConnect(username=username, password=password, updateAfterLogin=False, loginOnInit=True,
                                                 updateCapabilities=mqttCLient.updateCapabilities, updatePictures=mqttCLient.updatePictures,
-                                                maxAgePictures=args.pictureCache, selective=mqttCLient.selective,
-                                                forceReloginAfter=21600, timeout=180)
+                                                maxAgePictures=args.pictureCache, timeout=180, service=Service(args.service))
+                print('WeConnected')
                 mqttCLient.connectWeConnect(weConnect)
                 break
             except exceptions.ConnectionError as e:
-                LOG.error('Could not connect to VW-Server: %s, will retry in 10 seconds', e)
+                LOG.error('Could not connect to CarNET-Server: %s, will retry in 10 seconds', e)
                 time.sleep(10)
 
         if args.chargingLocation is not None:
@@ -329,7 +329,7 @@ def main():  # noqa: C901  # pylint: disable=too-many-branches,too-many-statemen
                 sys.exit(1)
             mqttCLient.weConnect.latitude = latitude
             mqttCLient.weConnect.longitude = longitude
-        mqttCLient.weConnect.searchRadius = args.chargingLocationRadius
+        # mqttCLient.weConnect.searchRadius = args.chargingLocationRadius
 
         while True:
             try:
@@ -358,7 +358,7 @@ def main():  # noqa: C901  # pylint: disable=too-many-branches,too-many-statemen
 
 class WeConnectMQTTClient(paho.mqtt.client.Client):  # pylint: disable=too-many-instance-attributes
     def __init__(self, clientId=None, protocol=paho.mqtt.client.MQTTv311, transport='tcp', interval=300,  # pylint: disable=too-many-arguments
-                 prefix='weconnect/0', ignore=0, updateCapabilities=True, updatePictures=True, selective=None, listNewTopics=False, republishOnUpdate=False,
+                 prefix='weconnect/0', ignore=0, updateCapabilities=True, updatePictures=True, listNewTopics=False, republishOnUpdate=False,
                  pictureFormat=None, topicFilterRegex=None, convertTimezone=None, timeFormat=None, withRawJsonTopic=False, passive=False,
                  updateOnConnect=True):
         super().__init__(callback_api_version=paho.mqtt.client.CallbackAPIVersion.VERSION2, client_id=clientId, transport=transport, protocol=protocol)
@@ -374,7 +374,6 @@ class WeConnectMQTTClient(paho.mqtt.client.Client):  # pylint: disable=too-many-
         self.updateCapabilities = updateCapabilities
         self.updatePictures = updatePictures
         self.pictureFormat = pictureFormat
-        self.selective = selective
         self.listNewTopics = listNewTopics
         self.topics = []
         self.topicsChanged = False
@@ -459,7 +458,8 @@ class WeConnectMQTTClient(paho.mqtt.client.Client):  # pylint: disable=too-many-
             LOG.info('Update data from WeConnect')
             self.hasChanges = False
             try:
-                self.weConnect.update(updateCapabilities=self.updateCapabilities, updatePictures=self.updatePictures, selective=self.selective, force=True)
+                # print('update')
+                self.weConnect.update(updateCapabilities=self.updateCapabilities, updatePictures=self.updatePictures, force=True)
                 self.setConnected(connected=True)
                 self.setError(code=WeConnectErrors.SUCCESS)
                 topic = f'{self.prefix}/mqtt/weconnectUpdated'
